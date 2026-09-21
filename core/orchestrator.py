@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Optional, Callable
 
 from core.models import SubTaskSpec, HelmPlan, AgentResult, OrchestrationReport
 from core.openrouter_client import call_openrouter
+from core.provider_router import call_model
 
 logger = logging.getLogger("orchestrator")
 
@@ -20,6 +21,10 @@ DEFAULT_WORKER_MODELS = {
     "agent_4": "google/gemma-4-26b-a4b-it:free",
     "agent_5": "liquid/lfm-2.5-2.6b:free",
     "agent_6": "openrouter/free",
+    # Local Ollama models (~2B parameters)
+    "agent_7": "ollama/gemma2:2b",
+    "agent_8": "ollama/qwen2.5:1.5b",
+    "agent_9": "ollama/smollm:1.7b",
 }
 
 def get_helm_system_prompt(num_agents: int) -> str:
@@ -79,7 +84,7 @@ async def plan_task(
         on_update("helm_planning_start", {"helm_model": helm_model, "task": task, "num_agents": num_agents})
 
     user_prompt = f"Decompose this build task into {num_agents} subagent specifications:\n\nTask: {task}"
-    content, usage = await call_openrouter(
+    content, usage = await call_model(
         model=helm_model,
         system_prompt=get_helm_system_prompt(num_agents),
         user_prompt=user_prompt,
@@ -139,7 +144,7 @@ async def execute_worker(
             f"Detailed Instructions:\n{spec.instructions}\n\n"
             "Remember: Return ONLY the exact, raw file content for your designated file."
         )
-        content, usage = await call_openrouter(
+        content, usage = await call_model(
             model=model,
             system_prompt=WORKER_SYSTEM_PROMPT,
             user_prompt=user_msg,

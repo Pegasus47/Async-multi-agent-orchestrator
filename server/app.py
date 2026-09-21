@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from core.openrouter_client import fetch_free_models
+from core.provider_router import fetch_all_models
 from core.orchestrator import run_orchestration, DEFAULT_HELM_MODEL
 from server.db import init_db, save_run, get_all_runs, get_run_by_id, get_usage_billing_report
 
@@ -57,6 +58,14 @@ class OrchestrateRequest(BaseModel):
 async def get_free_models(api_key: Optional[str] = None):
     key = api_key or os.environ.get("OPENROUTER_API_KEY")
     models = await fetch_free_models(key)
+    return {"models": models}
+
+
+@app.get("/api/models/all")
+async def get_all_available_models(api_key: Optional[str] = None):
+    """Returns models from all providers (OpenRouter + local Ollama)."""
+    key = api_key or os.environ.get("OPENROUTER_API_KEY")
+    models = await fetch_all_models(key)
     return {"models": models}
 
 

@@ -12,6 +12,8 @@ import os
 import sys
 
 from core.openrouter_client import fetch_free_models
+from core.ollama_client import OLLAMA_MODELS, check_ollama_health
+from core.provider_router import fetch_all_models
 from core.orchestrator import run_orchestration, DEFAULT_HELM_MODEL, DEFAULT_WORKER_MODELS
 from server.db import save_run, init_db
 
@@ -22,6 +24,8 @@ def main():
     parser.add_argument("--api-key", default=None, help="OpenRouter API key (defaults to OPENROUTER_API_KEY env var)")
     parser.add_argument("--helm-model", default=DEFAULT_HELM_MODEL, help="Model playing Helm orchestrator")
     parser.add_argument("--list-free-models", action="store_true", help="List active free models discovered from OpenRouter and exit")
+    parser.add_argument("--list-ollama-models", action="store_true", help="List locally available Ollama models and exit")
+    parser.add_argument("--list-all-models", action="store_true", help="List all models from all providers (OpenRouter + Ollama) and exit")
     args = parser.parse_args()
 
     init_db()
@@ -31,6 +35,30 @@ def main():
         models = asyncio.run(fetch_free_models(api_key=args.api_key))
         print(f"\nFound {len(models)} Free Models:")
         for m in models:
+            print(f"  - {m['id']} ({m['name']}) [Context: {m.get('context_length', 'N/A')}]")
+        return
+
+    if args.list_ollama_models:
+        print("Checking local Ollama server...")
+        is_online = asyncio.run(check_ollama_health())
+        status = "ONLINE" if is_online else "OFFLINE"
+        print(f"Ollama Server: {status}\n")
+        print("Configured Ollama Models (~2B parameters):")
+        for m in OLLAMA_MODELS:
+            print(f"  - {m['id']} ({m['name']}) [Context: {m.get('context_length', 'N/A')}]")
+            print(f"    {m['description']}")
+        return
+
+    if args.list_all_models:
+        print("Discovering models from all providers...")
+        models = asyncio.run(fetch_all_models(api_key=args.api_key))
+        ollama_models = [m for m in models if m.get("provider") == "ollama"]
+        openrouter_models = [m for m in models if m.get("provider") == "openrouter"]
+        print(f"\n--- Local Ollama Models ({len(ollama_models)}) ---")
+        for m in ollama_models:
+            print(f"  - {m['id']} ({m['name']}) [{m.get('status', 'unknown')}]")
+        print(f"\n--- OpenRouter Free Models ({len(openrouter_models)}) ---")
+        for m in openrouter_models:
             print(f"  - {m['id']} ({m['name']}) [Context: {m.get('context_length', 'N/A')}]")
         return
 
