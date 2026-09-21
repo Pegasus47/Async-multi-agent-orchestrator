@@ -64,7 +64,24 @@ export OPENROUTER_API_KEY="sk-or-v1-..."
 ```
 Or enter it directly in the frontend UI by clicking the Key icon.
 
-### 3. Launch the Web Dashboard
+### 3. Start the frontend
+
+Navigate to the frontend directory
+```bash
+cd frontend
+```
+Run the frontend
+```bash
+npm install
+npm run build
+```
+
+Return to basepath
+```bash
+cd ..
+```
+ 
+### 4. Launch the Web Dashboard
 
 ```bash
 python3 -m server.app
@@ -72,7 +89,7 @@ python3 -m server.app
 ```
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in your browser.
 
-### 4. Run via Command Line Interface (CLI)
+### 5. Run via Command Line Interface (CLI)
 
 ```bash
 # Run with 3 agents
@@ -85,7 +102,7 @@ python3 run_cli.py --task "build a mini kanban board" --num-agents 4
 python3 run_cli.py --list-free-models
 ```
 
-### 5. Running Tests
+### 6. Running Tests
 
 ```bash
 python3 -m unittest discover -s tests -v
