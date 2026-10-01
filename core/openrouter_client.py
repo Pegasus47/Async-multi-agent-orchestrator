@@ -114,7 +114,8 @@ def _resolve_provider(model: str, api_key: Optional[str]) -> Tuple[str, Dict[str
         # No key needed. Long timeout: the first request after `ollama serve` loads the model.
         base = os.environ.get("OLLAMA_BASE_URL", OLLAMA_DEFAULT_URL)
         url = base.rstrip("/") + "/v1/chat/completions"
-        return url, {"Content-Type": "application/json"}, model[len(OLLAMA_PREFIX):], 600
+        timeout_s = int(os.environ.get("OLLAMA_TIMEOUT_S", "600"))
+        return url, {"Content-Type": "application/json"}, model[len(OLLAMA_PREFIX):], timeout_s
 
     key = api_key or os.environ.get("OPENROUTER_API_KEY")
     if not key:
@@ -136,12 +137,19 @@ async def call_openrouter(
     temperature: float = 0.2,
     max_tokens: int = 2500,
     max_retries: int = 3,
+    json_mode: bool = False,
 ) -> Tuple[str, Dict[str, Any]]:
     """
     Calls OpenRouter chat completions with semaphore rate-limiting and exponential backoff retry.
     Returns (content, usage_dict).
     """
+    is_ollama = model.startswith(OLLAMA_PREFIX)
     url, headers, model, timeout_s = _resolve_provider(model, api_key)
+    if is_ollama:
+        # A local request that timed out would only time out again, so don't retry it.
+        max_retries = 1
+    if os.environ.get("LLM_MAX_TOKENS"):  # optional cap, e.g. for slow CPU runs
+        max_tokens = min(max_tokens, int(os.environ["LLM_MAX_TOKENS"]))
 
     payload = {
         "model": model,
@@ -152,6 +160,9 @@ async def call_openrouter(
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    if json_mode and is_ollama:
+        # Ollama then only emits a JSON object and stops when it is closed.
+        payload["response_format"] = {"type": "json_object"}
 
     last_error = None
 
@@ -185,7 +196,17 @@ async def call_openrouter(
                             err_msg = data.get("error", f"HTTP {status}")
                             raise RuntimeError(f"OpenRouter API error ({status}): {err_msg}")
 
-        except (aiohttp.ClientError, asyncio.TimeoutError) as net_err:
+        except asyncio.TimeoutError:
+            last_error = f"no reply within {timeout_s}s"
+            if attempt == max_retries - 1:
+                break
+            wait_s = (2 ** attempt) + random.uniform(0.5, 1.5)
+            logger.warning(f"Timeout on {model} attempt {attempt+1}. Retrying in {wait_s:.1f}s...")
+            await asyncio.sleep(wait_s)
+        except aiohttp.ClientError as net_err:
+            last_error = str(net_err)
+            if attempt == max_retries - 1:
+                break
             wait_s = (2 ** attempt) + random.uniform(0.5, 1.5)
             logger.warning(f"Network error on {model} attempt {attempt+1}: {net_err}. Retrying in {wait_s:.1f}s...")
             await asyncio.sleep(wait_s)
@@ -197,4 +218,4 @@ async def call_openrouter(
             await asyncio.sleep(wait_s)
             last_error = str(ex)
 
-    raise RuntimeError(f"Failed after {max_retries} attempts. Last error: {last_error}")
+    raise RuntimeError(f"{model}: failed after {max_retries} attempt(s). Last error: {last_error}")

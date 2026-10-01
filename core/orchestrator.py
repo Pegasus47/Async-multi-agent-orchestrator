@@ -85,6 +85,7 @@ async def plan_task(
         user_prompt=user_prompt,
         api_key=api_key,
         temperature=0.1,
+        json_mode=True,
     )
     raw_plan = extract_json_from_text(content)
 

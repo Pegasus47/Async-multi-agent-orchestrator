@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from typing import List, Optional
 
@@ -31,6 +32,7 @@ from server.db import get_run_by_id, init_db, save_run
 HPC_LOGIN_HOST = "hpc.bits-hyderabad.ac.in"
 MIN_AGENTS, MAX_AGENTS = 2, 8
 LINE = "-" * 65
+HEARTBEAT_S = 30  # print "still waiting" after this many silent seconds
 
 
 def fail(msg: str) -> None:
@@ -194,11 +196,23 @@ def warm_up(local: LocalModels, model_ids: List[str]) -> None:
 
 def run_once(task: str, planner: str, workers: List[str], api_key: Optional[str]) -> None:
     started = time.time()
+    state = {"last_print": started, "waiting_for": "the planner", "pending": set()}
 
     def log(msg: str) -> None:
+        state["last_print"] = time.time()
         print(f"[{time.time() - started:6.1f}s] {msg}", flush=True)
 
+    def heartbeat(stop: threading.Event) -> None:
+        while not stop.wait(5):
+            if time.time() - state["last_print"] >= HEARTBEAT_S:
+                pending = ", ".join(sorted(state["pending"])) or state["waiting_for"]
+                log(f"still waiting for {pending} ...")
+
     def on_update(event: str, data: dict) -> None:
+        if event == "worker_start":
+            state["pending"].add(data["agent_id"])
+        elif event in ("worker_complete", "worker_error"):
+            state["pending"].discard(data["agent_id"])
         if event == "helm_planning_start":
             log(f"Planning with {short(planner)} ...")
         elif event == "helm_planning_complete":
@@ -219,6 +233,8 @@ def run_once(task: str, planner: str, workers: List[str], api_key: Optional[str]
     print(f" Workers : {', '.join(short(w) for w in workers)}")
     print(LINE)
 
+    stop = threading.Event()
+    threading.Thread(target=heartbeat, args=(stop,), daemon=True).start()
     try:
         report = asyncio.run(run_orchestration(
             task=task,
@@ -235,6 +251,8 @@ def run_once(task: str, planner: str, workers: List[str], api_key: Optional[str]
     except Exception as e:
         print(f"\nRun failed: {e}")
         return
+    finally:
+        stop.set()
 
     record = report.to_dict()
     save_run(record)
@@ -296,6 +314,10 @@ def main() -> None:
     p.add_argument("--workers", help="comma-separated worker models, one per agent")
     p.add_argument("--num-agents", type=int, default=3,
                    help=f"number of workers when --workers isn't given ({MIN_AGENTS}-{MAX_AGENTS}, default 3)")
+    p.add_argument("--max-tokens", type=int,
+                   help="cap tokens per model reply (useful on CPU, e.g. 800)")
+    p.add_argument("--timeout", type=int, default=600,
+                   help="seconds to wait for one local model reply (default 600)")
     p.add_argument("--list-models", action="store_true", help="list the pulled Ollama models and exit")
     p.add_argument("--pull", metavar="USER@HOST:REPO_PATH",
                    help="(laptop) fetch HPC runs into workspaces/ and History")
@@ -310,6 +332,10 @@ def main() -> None:
         for m in asyncio.run(fetch_free_models(api_key=args.api_key)):
             print(f"  {m['id']}  ({m['name']})")
         return
+
+    os.environ["OLLAMA_TIMEOUT_S"] = str(args.timeout)
+    if args.max_tokens:
+        os.environ["LLM_MAX_TOKENS"] = str(args.max_tokens)
 
     interactive = not args.task and not args.list_models
     if interactive and not sys.stdin.isatty():
