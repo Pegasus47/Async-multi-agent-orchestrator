@@ -12,6 +12,8 @@ class SubTaskSpec:
 class HelmPlan:
     plan_summary: str
     subtasks: Dict[str, SubTaskSpec]
+    tokens_in: int = 0
+    tokens_out: int = 0
 
 @dataclass
 class AgentResult:

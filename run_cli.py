@@ -49,6 +49,7 @@ def main():
     print("-" * 65)
 
     def on_update(event: str, data: dict):
+        print(f"[{event}] {json.dumps(data, ensure_ascii=False)}", flush=True)
         if event == "helm_planning_start":
             print(f"[*] Helm Orchestrator planning decomposition...")
         elif event == "helm_planning_complete":

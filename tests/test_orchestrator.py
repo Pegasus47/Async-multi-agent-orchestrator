@@ -1,6 +1,7 @@
 import asyncio
 import os
 import unittest
+import tempfile
 from unittest.mock import patch
 
 from core.models import SubTaskSpec, HelmPlan, AgentResult, OrchestrationReport
@@ -8,6 +9,15 @@ from core.orchestrator import run_orchestration, extract_json_from_text
 from server.db import init_db, save_run, get_all_runs, get_usage_billing_report, get_analytics_leaderboard
 
 class TestOrchestrator(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.db_patch = patch('server.db.DB_PATH', os.path.join(self.temp.name, 'test.db'))
+        self.db_patch.start()
+
+    def tearDown(self):
+        self.db_patch.stop()
+        self.temp.cleanup()
+
     def test_json_extraction(self):
         markdown_json = "```json\n{\"plan_summary\": \"test plan\", \"agent_1\": {\"role\": \"r\", \"filename\": \"f\", \"instructions\": \"i\"}}\n```"
         extracted = extract_json_from_text(markdown_json)
@@ -39,6 +49,8 @@ class TestOrchestrator(unittest.TestCase):
         self.assertTrue(report.wall_clock_s >= 0)
         self.assertEqual(len(report.files_written), 3)
         self.assertEqual(report.num_agents, 3)
+        self.assertEqual(report.total_tokens_in, 360)
+        self.assertEqual(report.total_tokens_out, 230)
         self.assertTrue(os.path.exists(report.output_dir))
 
     def test_database_persistence_and_billing(self):

@@ -45,6 +45,21 @@ An asynchronous, heterogeneous multi-agent orchestration platform designed for s
 
 ## Quickstart
 
+### Local demo data and Windows launcher
+
+This checkout includes `seed_sample_data.py`. Run it once to populate an empty
+ledger with three clearly labeled `[SAMPLE]` runs and HTML/CSS/JavaScript files.
+Their tokens and timings are synthetic; no OpenRouter calls are made. Existing
+history is preserved. The dashboard loads the latest workspace automatically.
+
+On this machine, run `./start_dashboard.ps1` from PowerShell and open
+http://127.0.0.1:8000. Dependencies are installed in `.runtime`; the built React
+site is in `frontend/dist`. The header theme button saves light/dark preference.
+Live builds require your OpenRouter key. HPC/local models are not connected.
+The model drawer discovers the current free model catalog from OpenRouter.
+Free-tier cost estimates are $0; the commercial equivalent is only a comparison
+using the dashboard's illustrative $2 per million tokens rate.
+
 ### 1. Installation
 
 ```bash

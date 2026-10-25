@@ -108,6 +108,8 @@ async def plan_task(
     plan = HelmPlan(
         plan_summary=raw_plan.get("plan_summary", f"Decomposition of '{task}' into {num_agents} subtasks"),
         subtasks=subtasks,
+        tokens_in=usage.get("prompt_tokens", 0),
+        tokens_out=usage.get("completion_tokens", 0),
     )
 
     if on_update:
@@ -252,8 +254,8 @@ async def run_orchestration(
 
     total_agent_time = sum(r.duration_s for r in results)
     concurrency_speedup = round(total_agent_time / max(wall_clock_s, 0.001), 2)
-    total_tokens_in = sum(r.tokens_in or 0 for r in results)
-    total_tokens_out = sum(r.tokens_out or 0 for r in results)
+    total_tokens_in = plan.tokens_in + sum(r.tokens_in or 0 for r in results)
+    total_tokens_out = plan.tokens_out + sum(r.tokens_out or 0 for r in results)
     total_cost = sum(r.cost_est or 0.0 for r in results)
 
     report = OrchestrationReport(

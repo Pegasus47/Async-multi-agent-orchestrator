@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import mimetypes
+from pathlib import Path
 from typing import Dict, Any, Optional, List
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
@@ -31,6 +32,14 @@ app.add_middleware(
 )
 
 active_connections: List[WebSocket] = []
+
+def workspace_path(run_id: str, filename: str = "") -> Path:
+    root = (Path.cwd() / "workspaces").resolve()
+    directory = (root / run_id).resolve()
+    target = (directory / filename).resolve()
+    if directory.parent != root or not target.is_relative_to(directory):
+        raise HTTPException(status_code=400, detail="Invalid workspace path")
+    return target
 
 async def broadcast_telemetry(event: str, data: Dict[str, Any]):
     message = json.dumps({"event": event, "data": data})
@@ -114,7 +123,7 @@ async def get_run(run_id: str):
 
 @app.get("/api/runs/{run_id}/files")
 async def get_run_files(run_id: str):
-    run_dir = os.path.join(os.getcwd(), "workspaces", run_id)
+    run_dir = str(workspace_path(run_id))
     if not os.path.exists(run_dir):
         raise HTTPException(status_code=404, detail="Run workspace directory not found")
 
@@ -132,7 +141,7 @@ async def get_run_files(run_id: str):
 
 @app.get("/api/preview/{run_id}/{filename:path}")
 async def preview_file(run_id: str, filename: str):
-    fpath = os.path.join(os.getcwd(), "workspaces", run_id, filename)
+    fpath = str(workspace_path(run_id, filename))
     if not os.path.exists(fpath):
         raise HTTPException(status_code=404, detail=f"File {filename} not found in workspace")
 
