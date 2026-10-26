@@ -55,6 +55,10 @@ source .venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 ```
+OR
+```bash
+python -m pip install -r requirements.txt
+```
 
 ### 2. Configure OpenRouter API Key
 
@@ -91,6 +95,12 @@ python3 run_cli.py --list-free-models
 python3 -m unittest discover -s tests -v
 ```
 
+### 6. Running CLI on HPC
+
+```bash
+./run_orchestrator.sh --task "prompt (eg.build a kanban board)" --num-agents 4 --planner gemma2 --workers qwen2.5,smollm
+```
+Scheduling the run is automatically done by the script using srun.
 ---
 
 ## Project Structure

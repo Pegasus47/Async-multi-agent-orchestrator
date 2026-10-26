@@ -145,3 +145,9 @@ logs/
 *.sublime-project
 *.sublime-workspace
 tempCodeRunnerFile.*
+
+# ------------------------------------------------------------------------------
+# Slurm job outputs and error files
+# ------------------------------------------------------------------------------
+slurm.*.out
+slurm.*.err
