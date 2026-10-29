@@ -145,3 +145,6 @@ logs/
 *.sublime-project
 *.sublime-workspace
 tempCodeRunnerFile.*
+
+# Local benchmark adapters, evidence and evaluator outputs
+/benchmark-results/

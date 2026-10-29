@@ -2,13 +2,14 @@ import json
 import sqlite3
 import os
 import time
+from contextlib import closing
 from typing import List, Dict, Any, Optional
 
 DB_PATH = os.path.join(os.getcwd(), "data", "orchestrator_study.db")
 
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    with sqlite3.connect(DB_PATH) as conn:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS runs (
@@ -29,20 +30,23 @@ def init_db():
                 created_at REAL NOT NULL
             )
         """)
+        columns = {row[1] for row in cursor.execute("PRAGMA table_info(runs)")}
+        if 'report_json' not in columns:
+            cursor.execute("ALTER TABLE runs ADD COLUMN report_json TEXT")
         conn.commit()
 
 
 def save_run(report_dict: Dict[str, Any]):
     init_db()
-    with sqlite3.connect(DB_PATH) as conn:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO runs (
                 run_id, task, helm_model, num_agents, plan_summary,
                 wall_clock_s, sum_of_agent_times_s, concurrency_speedup,
                 total_tokens_in, total_tokens_out, total_cost_est,
-                output_dir, files_json, agents_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                output_dir, files_json, agents_json, created_at, report_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             report_dict["run_id"],
             report_dict["task"],
@@ -58,14 +62,15 @@ def save_run(report_dict: Dict[str, Any]):
             report_dict["output_dir"],
             json.dumps(report_dict.get("files_written", [])),
             json.dumps(report_dict.get("agents", [])),
-            report_dict.get("created_at", time.time())
+            report_dict.get("created_at", time.time()),
+            json.dumps(report_dict)
         ))
         conn.commit()
 
 
 def get_all_runs(limit: int = 100) -> List[Dict[str, Any]]:
     init_db()
-    with sqlite3.connect(DB_PATH) as conn:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (limit,))
@@ -73,6 +78,9 @@ def get_all_runs(limit: int = 100) -> List[Dict[str, Any]]:
         runs = []
         for r in rows:
             d = dict(r)
+            complete = json.loads(d.pop("report_json", None) or "{}")
+            complete.update(d)
+            d = complete
             d["files_written"] = json.loads(d["files_json"])
             d["agents"] = json.loads(d["agents_json"])
             del d["files_json"]
@@ -83,7 +91,7 @@ def get_all_runs(limit: int = 100) -> List[Dict[str, Any]]:
 
 def get_run_by_id(run_id: str) -> Optional[Dict[str, Any]]:
     init_db()
-    with sqlite3.connect(DB_PATH) as conn:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,))
@@ -91,6 +99,9 @@ def get_run_by_id(run_id: str) -> Optional[Dict[str, Any]]:
         if not row:
             return None
         d = dict(row)
+        complete = json.loads(d.pop("report_json", None) or "{}")
+        complete.update(d)
+        d = complete
         d["files_written"] = json.loads(d["files_json"])
         d["agents"] = json.loads(d["agents_json"])
         del d["files_json"]
@@ -114,6 +125,17 @@ def get_usage_billing_report() -> Dict[str, Any]:
         if h not in model_usage:
             model_usage[h] = {"calls": 0, "tokens_in": 0, "tokens_out": 0, "cost": 0.0}
         model_usage[h]["calls"] += 1
+
+        for phase in ('planner', 'packaging'):
+            usage = r.get('phase_usage', {}).get(phase, {})
+            model = usage.get('model')
+            if not model:
+                continue
+            if model not in model_usage:
+                model_usage[model] = {"calls": 0, "tokens_in": 0, "tokens_out": 0, "cost": 0.0}
+            model_usage[model]["tokens_in"] += usage.get("tokens_in", 0)
+            model_usage[model]["tokens_out"] += usage.get("tokens_out", 0)
+            model_usage[model]["calls"] += usage.get("attempts", 1) - (1 if phase == 'planner' else 0)
 
         for a in r.get("agents", []):
             m = a.get("model", "unknown")

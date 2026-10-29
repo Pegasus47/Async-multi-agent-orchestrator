@@ -12,6 +12,8 @@ class SubTaskSpec:
 class HelmPlan:
     plan_summary: str
     subtasks: Dict[str, SubTaskSpec]
+    project: Dict[str, Any] = field(default_factory=dict)
+    usage: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class AgentResult:
@@ -49,6 +51,9 @@ class OrchestrationReport:
     files_written: List[str]
     agents: List[Dict[str, Any]]
     created_at: float = field(default_factory=time.time)
+    project: Dict[str, Any] = field(default_factory=dict)
+    packaging: Dict[str, Any] = field(default_factory=dict)
+    phase_usage: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

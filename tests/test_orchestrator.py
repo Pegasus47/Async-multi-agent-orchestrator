@@ -1,6 +1,10 @@
 import asyncio
+import json
 import os
 import unittest
+import tempfile
+from pathlib import Path
+from server import db
 from unittest.mock import patch
 
 from core.models import SubTaskSpec, HelmPlan, AgentResult, OrchestrationReport
@@ -8,6 +12,18 @@ from core.orchestrator import run_orchestration, extract_json_from_text
 from server.db import init_db, save_run, get_all_runs, get_usage_billing_report, get_analytics_leaderboard
 
 class TestOrchestrator(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.previous_cwd = os.getcwd()
+        os.chdir(self.temp.name)
+        self.db_patch = patch.object(db, 'DB_PATH', str(Path(self.temp.name) / 'data' / 'test.db'))
+        self.db_patch.start()
+
+    def tearDown(self):
+        self.db_patch.stop()
+        os.chdir(self.previous_cwd)
+        self.temp.cleanup()
+
     def test_json_extraction(self):
         markdown_json = "```json\n{\"plan_summary\": \"test plan\", \"agent_1\": {\"role\": \"r\", \"filename\": \"f\", \"instructions\": \"i\"}}\n```"
         extracted = extract_json_from_text(markdown_json)
@@ -16,10 +32,15 @@ class TestOrchestrator(unittest.TestCase):
     @patch("core.orchestrator.call_openrouter")
     def test_live_orchestration_flow(self, mock_call):
         async def fake_call(model, system_prompt, user_prompt, **kwargs):
+            project = dict(application_type='static', runtime='browser',runtime_version='modern',
+                entry_point='index.html',files=['index.html','style.css','script.js'])
+            if 'final packaging reviewer' in system_prompt:
+                return json.dumps(dict(project=project,findings=[],files={})), {"prompt_tokens": 20,"completion_tokens": 30}
             if "Helm" in system_prompt or "master engineering orchestrator" in system_prompt:
                 # Return Helm plan
                 return '''{
                     "plan_summary": "Modular build test",
+                    "project": {"application_type":"static", "runtime":"browser", "runtime_version":"modern", "entry_point":"index.html", "files":["index.html","style.css","script.js"]},
                     "agent_1": {"role": "html_architect", "filename": "index.html", "instructions": "Write HTML"},
                     "agent_2": {"role": "css_stylist", "filename": "style.css", "instructions": "Write CSS"},
                     "agent_3": {"role": "js_engineer", "filename": "script.js", "instructions": "Write JS"}
@@ -37,7 +58,8 @@ class TestOrchestrator(unittest.TestCase):
         ))
 
         self.assertTrue(report.wall_clock_s >= 0)
-        self.assertEqual(len(report.files_written), 3)
+        self.assertTrue({"index.html", "style.css", "script.js", "setup.sh", "start.sh"}.issubset(report.files_written))
+        self.assertEqual(report.packaging["status"], "ready")
         self.assertEqual(report.num_agents, 3)
         self.assertTrue(os.path.exists(report.output_dir))
 

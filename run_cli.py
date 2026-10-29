@@ -219,6 +219,10 @@ def run_once(task: str, planner: str, workers: List[str], api_key: Optional[str]
             log(f"Plan: {data.get('plan_summary')}")
             for aid, sub in data.get("subtasks", {}).items():
                 print(f"           {aid}: {sub['role']} -> {sub['filename']}")
+        elif event == "packaging_start":
+            log("Planner is reviewing actual source and packaging requirements ...")
+        elif event == "packaging_complete":
+            log(f"Packaging: {data['status']}" + (f" ({data['error']})" if data.get('error') else ""))
         elif event == "worker_start":
             log(f"{data['agent_id']} ({short(data['model'])}) writing {data['filename']} ...")
         elif event == "worker_complete":
@@ -256,8 +260,7 @@ def run_once(task: str, planner: str, workers: List[str], api_key: Optional[str]
 
     record = report.to_dict()
     save_run(record)
-    with open(os.path.join(report.output_dir, "run.json"), "w", encoding="utf-8") as f:
-        json.dump(record, f, indent=2)
+    # run_orchestration atomically writes run.json for both CLI and dashboard runs.
 
     failed = [a["agent_id"] for a in record["agents"] if a.get("error")]
     print(LINE)
@@ -267,6 +270,11 @@ def run_once(task: str, planner: str, workers: List[str], api_key: Optional[str]
     print(f" Files           : {', '.join(report.files_written) or 'none'}")
     if failed:
         print(f" Failed agents   : {', '.join(failed)}")
+    print(f" Packaging       : {report.packaging.get('status', 'unknown')}")
+    if report.packaging.get('error'):
+        print(f" Packaging error : {report.packaging['error']}")
+    print(f" Runtime / entry : {report.project.get('runtime', '?')} / {report.project.get('entry_point', '?')}")
+    print(" Startup / tests : not run (review SETUP.md and scripts on the laptop)")
     print(f" Output folder   : {report.output_dir}")
     print(LINE)
     print(" To view it in the website, run this on your laptop (in the repo folder):")

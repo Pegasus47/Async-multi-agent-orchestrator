@@ -32,16 +32,24 @@ An asynchronous, heterogeneous multi-agent orchestration platform designed for s
 
 ## Features
 
-- **100% Live OpenRouter Execution**: Direct integration with OpenRouter chat completions API using active free models.
-- **Customizable Number of Agents ($N=2..6$)**: Configure how many subagents execute in parallel; the Helm orchestrator dynamically divides the project and sets strict interface contracts.
+- **Keyless Ollama generation, optional OpenRouter**: Explicit provider selection, installed-model discovery, and no automatic model startup or provider fallback.
+- **Customizable Number of Agents ($N=2..8$)**: Configure how many subagents execute in parallel; the Helm orchestrator dynamically divides the project and sets strict interface contracts.
 - **Concurrent Worker Execution**: Worker models execute simultaneously via `asyncio.gather()`, tracking individual latencies, token counts, and concurrency speedup factors.
 - **Dynamic OpenRouter Free Models**: Discovers active `:free` models live from OpenRouter (Gemma, Nemotron, Cohere, etc.), with automatic token-bucket concurrency throttling and fallback handling.
 - **Minimalist React + shadcn/ui Monochromatic Frontend**:
-  - **MAIN Tab**: Task specification input, preset chips, agent counter selector (2 to 6 agents), model assignment drawer, live execution pipeline, and a split screen with a tabbed Code Viewer and Live Sandboxed Iframe.
+  - **MAIN Tab**: Task specification input, preset chips, agent counter selector (2 to 8 agents), model assignment drawer, live execution pipeline, and a split screen with a tabbed Code Viewer and Live Sandboxed Iframe.
   - **HISTORY Tab**: Detailed billing & token usage breakdown, commercial equivalent savings estimate, per-model consumption table, and a run ledger with one-click inspection.
 - **Headless CLI Runner**: Run builds directly from the terminal via `run_cli.py`.
 
 ---
+
+## Linux generation and evaluation update
+
+The dashboard now defaults to Ollama with no API key. OpenRouter is optional.
+Generation includes a validated project/dependency contract and final packaging review;
+setup/start scripts are produced for review and are not executed automatically.
+See [local generation, verification, and WebGen-Bench pilot](docs/LOCAL_GENERATION_AND_WEBGEN.md)
+for the current workflow, test evidence, limits, and exact benchmark commands.
 
 ## Quickstart
 
@@ -56,7 +64,13 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Configure OpenRouter API Key
+### 2. Choose a generation provider
+
+Ollama is the default dashboard provider. Start an authorized Ollama endpoint separately,
+set `OLLAMA_BASE_URL` when needed, and use **Refresh models**. No OpenRouter key is required.
+No model server or HPC job is started by the dashboard.
+
+For optional OpenRouter generation
 
 Either export the environment variable:
 ```bash
@@ -67,8 +81,8 @@ Or enter it directly in the frontend UI by clicking the Key icon.
 ### 3. Launch the Web Dashboard
 
 ```bash
-python3 -m server.app
-# Server runs at http://127.0.0.1:8000
+./start_dashboard.sh
+# Server runs only on http://127.0.0.1:8000
 ```
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in your browser.
 

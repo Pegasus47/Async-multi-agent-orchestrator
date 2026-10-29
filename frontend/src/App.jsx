@@ -32,20 +32,16 @@ export default function App() {
   const [numAgents, setNumAgents] = useState(3)
   const [apiKey, setApiKey] = useState(localStorage.getItem('openrouter_api_key') || '')
   const [tempApiKey, setTempApiKey] = useState(apiKey)
-  const [showKeyModal, setShowKeyModal] = useState(!apiKey)
+  const [showKeyModal, setShowKeyModal] = useState(false)
   const [showModelConfig, setShowModelConfig] = useState(false)
 
   // Models State
+  const [provider, setProvider] = useState('ollama')
+  const [modelError, setModelError] = useState('')
+  const [modelRefresh, setModelRefresh] = useState(0)
   const [freeModels, setFreeModels] = useState([])
-  const [helmModel, setHelmModel] = useState('google/gemma-4-31b-it:free')
-  const [workerModels, setWorkerModels] = useState({
-    agent_1: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
-    agent_2: 'cohere/north-mini-code:free',
-    agent_3: 'nvidia/nemotron-3-super-120b-a12b:free',
-    agent_4: 'google/gemma-4-26b-a4b-it:free',
-    agent_5: 'liquid/lfm-2.5-2.6b:free',
-    agent_6: 'openrouter/free',
-  })
+  const [helmModel, setHelmModel] = useState('')
+  const [workerModels, setWorkerModels] = useState({})
 
   // Execution & Live Telemetry State
   const [isExecuting, setIsExecuting] = useState(false)
@@ -62,6 +58,12 @@ export default function App() {
   const [files, setFiles] = useState({})
   const [selectedFile, setSelectedFile] = useState('')
   const [copied, setCopied] = useState(false)
+  const [previewEntry, setPreviewEntry] = useState('')
+  const [runError, setRunError] = useState('')
+  const [fileWarnings, setFileWarnings] = useState({})
+  const [runLoading, setRunLoading] = useState(false)
+  const [savedReport, setSavedReport] = useState(null)
+  const loadVersion = useRef(0)
 
   // History & Billing State
   const [billingData, setBillingData] = useState(null)
@@ -71,22 +73,33 @@ export default function App() {
   const wsRef = useRef(null)
   const iframeRef = useRef(null)
 
-  // Fetch Free Models
+  // Discover only models on an already-running endpoint; never start or pull models.
   useEffect(() => {
-    async function loadModels() {
-      try {
-        const url = apiKey ? `/api/models/free?api_key=${encodeURIComponent(apiKey)}` : '/api/models/free'
-        const res = await fetch(url)
-        const data = await res.json()
-        if (data.models && data.models.length > 0) {
-          setFreeModels(data.models)
-        }
-      } catch (err) {
-        console.error('Failed to load free models:', err)
-      }
-    }
-    loadModels()
-  }, [apiKey])
+    let cancelled = false
+    setModelError('')
+    fetchJson(`/api/models?provider=${provider}`).then(data => {
+      if (cancelled) return
+      const models = data.models || []
+      setFreeModels(models)
+      if (!models.length) setModelError('No installed models were found on the configured endpoint.')
+      setHelmModel(previous => previous || models[0]?.id || '')
+      setWorkerModels(previous => {
+        const next = { ...previous }
+        for (let i = 1; i <= 8; i++) next[`agent_${i}`] ||= models[0]?.id || ''
+        return next
+      })
+    }).catch(err => {
+      if (!cancelled) { setFreeModels([]); setModelError(err.message) }
+    })
+    return () => { cancelled = true }
+  }, [provider, modelRefresh])
+
+  function changeProvider(value) {
+    setProvider(value)
+    setHelmModel('')
+    setWorkerModels({})
+    setFreeModels([])
+  }
 
   // WebSocket Connection
   useEffect(() => {
@@ -140,6 +153,14 @@ export default function App() {
           [data.agent_id]: { ...prev.workers[data.agent_id], status: 'done', duration_s: data.duration_s }
         }
       }))
+    } else if (event === 'worker_error') {
+      setTelemetryState(prev => ({ ...prev, workers: { ...prev.workers,
+        [data.agent_id]: { ...prev.workers[data.agent_id], status: 'error', error: data.error }
+      } }))
+    } else if (event === 'packaging_start') {
+      setTelemetryState(prev => ({ ...prev, status: 'reviewing packaging' }))
+    } else if (event === 'packaging_complete') {
+      setTelemetryState(prev => ({ ...prev, status: `packaging ${data.status}` }))
     } else if (event === 'run_finished') {
       setTelemetryState(prev => ({
         ...prev,
@@ -154,12 +175,23 @@ export default function App() {
   async function handleRun() {
     if (!task.trim()) return
 
-    if (!apiKey.trim()) {
+    if (provider === 'openrouter' && !apiKey.trim()) {
       setShowKeyModal(true)
       alert('OpenRouter API key is required. Please enter your API key to proceed.')
       return
     }
 
+    if (!helmModel || Array.from({ length: numAgents }, (_, i) => workerModels[`agent_${i + 1}`]).some(model => !model)) {
+      setRunError('Select a planner and every worker model. Check the model endpoint first.')
+      return
+    }
+    loadVersion.current += 1
+    setRunError('')
+    setSavedReport(null)
+    setFiles({})
+    setSelectedFile('')
+    setPreviewEntry('')
+    setCurrentRunId(null)
     setIsExecuting(true)
     setTelemetryState({ status: 'starting', planSummary: '', workers: {}, wallTime: null, speedup: null })
 
@@ -168,7 +200,8 @@ export default function App() {
       num_agents: parseInt(numAgents, 10),
       helm_model: helmModel,
       worker_models: workerModels,
-      api_key: apiKey.trim(),
+      api_key: provider === 'openrouter' ? apiKey.trim() : null,
+      provider,
     }
 
     try {
@@ -184,43 +217,94 @@ export default function App() {
       }
 
       const report = await res.json()
-      setCurrentRunId(report.run_id)
-      await loadRunFiles(report.run_id)
+      await inspectRun(report.run_id)
 
     } catch (err) {
-      alert(`Execution failed: ${err.message}`)
+      setRunError(`Execution failed: ${err.message}`)
+      setTelemetryState(prev => ({ ...prev, status: 'generation failed' }))
     } finally {
       setIsExecuting(false)
     }
   }
 
-  // Load Run Files
-  async function loadRunFiles(runId) {
-    try {
-      const res = await fetch(`/api/runs/${runId}/files`)
-      const data = await res.json()
-      const loadedFiles = data.files || {}
-      setFiles(loadedFiles)
+  async function fetchJson(url) {
+    const res = await fetch(url)
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.detail || `Request failed (${res.status})`)
+    return data
+  }
 
-      const fnames = Object.keys(loadedFiles)
-      if (fnames.length > 0) {
-        const defaultFile = fnames.find(f => f.endsWith('.html')) || fnames[0]
-        setSelectedFile(defaultFile)
-      }
-    } catch (e) {
-      console.error('Error fetching run files:', e)
+  async function inspectRun(runId) {
+    const version = ++loadVersion.current
+    setActiveTab('main')
+    setRunLoading(true)
+    setRunError('')
+    setSavedReport(null)
+    setTask('')
+    setHelmModel('')
+    setWorkerModels({})
+    setCurrentRunId(null)
+    setFiles({})
+    setSelectedFile('')
+    setPreviewEntry('')
+    setFileWarnings({})
+    setTelemetryState({ status: 'idle', planSummary: '', workers: {}, wallTime: null, speedup: null })
+    try {
+      const id = encodeURIComponent(runId)
+      const [report, fileData] = await Promise.all([
+        fetchJson(`/api/runs/${id}`), fetchJson(`/api/runs/${id}/files`)
+      ])
+      if (version !== loadVersion.current) return
+      const loadedFiles = fileData.files || {}
+      const names = Object.keys(loadedFiles)
+      const htmlNames = names.filter(name => /\.html?$/i.test(name))
+      const entry = htmlNames.includes(report.project?.entry_point) ? report.project.entry_point : htmlNames.find(name => /^index\.html?$/i.test(name)) || htmlNames[0] || ''
+      const agents = report.agents || []
+      setCurrentRunId(report.run_id)
+      setSavedReport(report)
+      setTask(report.task)
+      setNumAgents(report.num_agents)
+      setProvider(report.helm_model?.startsWith('ollama/') ? 'ollama' : 'openrouter')
+      setHelmModel(report.helm_model)
+      setWorkerModels(Object.fromEntries(agents.map(a => [a.agent_id, a.model])))
+      setTelemetryState({
+        status: report.packaging?.status === 'failed' ? 'packaging failed' : agents.some(a => a.error) ? 'generation finished with errors' : 'generation completed',
+        planSummary: report.plan_summary || '',
+        workers: Object.fromEntries(agents.map(a => [a.agent_id, { ...a, status: a.error ? 'error' : 'done' }])),
+        wallTime: report.wall_clock_s,
+        speedup: report.concurrency_speedup
+      })
+      setFiles(loadedFiles)
+      setFileWarnings(fileData.errors || {})
+      setSelectedFile(entry || names[0] || '')
+      setPreviewEntry(entry)
+    } catch (err) {
+      if (version === loadVersion.current) setRunError(`Could not load run ${runId}: ${err.message}`)
+    } finally {
+      if (version === loadVersion.current) setRunLoading(false)
     }
   }
+
+  useEffect(() => {
+    const version = loadVersion.current
+    let cancelled = false
+    fetchJson('/api/runs?limit=1').then(data => {
+      if (!cancelled && version === loadVersion.current && data.runs?.length) inspectRun(data.runs[0].run_id)
+    }).catch(err => {
+      if (!cancelled && version === loadVersion.current) setRunError(`Could not load latest run: ${err.message}`)
+    })
+    return () => { cancelled = true }
+  }, [])
 
   // Load History & Billing Data
   async function loadBillingAndHistory() {
     setHistoryLoading(true)
     try {
-      const res = await fetch('/api/billing')
-      const data = await res.json()
+      const data = await fetchJson('/api/billing')
       setBillingData(data)
     } catch (err) {
-      console.error('Error loading billing history:', err)
+      setBillingData(null)
+      setRunError(`Could not load history: ${err.message}`)
     } finally {
       setHistoryLoading(false)
     }
@@ -247,7 +331,14 @@ export default function App() {
     setTimeout(() => setCopied(false), 1500)
   }
 
-  const htmlFileExists = Object.keys(files).some(f => f.endsWith('.html'))
+  const htmlFiles = Object.keys(files).filter(f => /\.html?$/i.test(f))
+  const htmlFileExists = htmlFiles.length > 0
+  const previewUrl = currentRunId && previewEntry
+    ? `/api/preview/${encodeURIComponent(currentRunId)}/${previewEntry.split('/').map(encodeURIComponent).join('/')}` : ''
+  const modelOptions = [...freeModels]
+  for (const id of [helmModel, ...Object.values(workerModels)]) {
+    if (id && !modelOptions.some(m => m.id === id)) modelOptions.push({ id, name: id })
+  }
 
   return (
     <div className="min-h-screen bg-black text-zinc-100 flex flex-col font-sans">
@@ -292,6 +383,7 @@ export default function App() {
 
           {/* API Key Status Pill */}
           <div className="flex items-center gap-2">
+            {provider === 'openrouter' && (
             <button
               onClick={() => {
                 setTempApiKey(apiKey)
@@ -303,6 +395,7 @@ export default function App() {
               <span>{apiKey ? 'KEY CONFIGURED' : 'SET OPENROUTER KEY'}</span>
               <Key className="w-3 h-3 text-zinc-400" />
             </button>
+            )}
           </div>
 
         </div>
@@ -310,6 +403,25 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-6">
+        {runError && <div role="alert" className="mb-4 rounded border border-red-800 p-3 text-sm text-red-300">{runError}</div>}
+        {runLoading && <p role="status" className="mb-4 text-sm text-zinc-400">Loading saved run…</p>}
+        {savedReport && <div className="mb-4 text-xs text-zinc-400 space-y-1">
+          <p>Saved run: {savedReport.run_id} · Functional evaluation: Not evaluated</p>
+          <p>Planner: {savedReport.helm_model} · {savedReport.phase_usage?.planner ? 'All phase tokens' : 'Worker tokens (legacy)'}: {(savedReport.total_tokens_in + savedReport.total_tokens_out).toLocaleString()} · Reported cost: ${Number(savedReport.total_cost_est || 0).toFixed(4)}</p>
+        </div>}
+        {savedReport?.project?.application_type && <details className="mb-4 rounded border border-zinc-800 p-3 text-xs text-zinc-300">
+          <summary className="cursor-pointer">Project setup · Packaging: {savedReport.packaging?.status || 'unknown'}</summary>
+          <p className="mt-2">Runtime: {savedReport.project.runtime} {savedReport.project.runtime_version} · Entry: {savedReport.project.entry_point}</p>
+          <p>Dependencies: {savedReport.project.dependencies?.map(d => `${d.name} ${d.version}`).join(', ') || 'none'}</p>
+          <p>Environment variables: {savedReport.project.environment_variables?.join(', ') || 'none'}</p>
+          <p>Install/build: {JSON.stringify([...(savedReport.project.install_commands || []), ...(savedReport.project.build_commands || [])])}</p>
+          <p>Start: {savedReport.project.application_type === 'static' ? `bash start.sh (port ${savedReport.project.port})` : JSON.stringify(savedReport.project.start_command)}</p>
+          <p>Startup: {savedReport.packaging?.startup || 'not_run'} · Functional checks: {savedReport.packaging?.functional_evaluation || 'not_run'}</p>
+          {savedReport.packaging?.error && <p role="alert" className="text-red-300">Packaging error: {savedReport.packaging.error}</p>}
+          {savedReport.packaging?.findings?.map((finding, i) => <p key={i}>{finding}</p>)}
+          <p className="mt-2">Review SETUP.md, setup.sh and start.sh before running. Generation never executes these commands.</p>
+        </details>}
+        {Object.entries(fileWarnings).map(([name, message]) => <p key={name} role="status" className="mb-2 text-xs text-amber-300">{name}: {message}</p>)}
 
         {/* ========================================================= */}
         {/* TAB 1: MAIN */}
@@ -328,7 +440,7 @@ export default function App() {
                 <div className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 px-2.5 py-1 rounded">
                   <span className="text-xs text-zinc-400 font-mono">AGENTS:</span>
                   <div className="flex items-center gap-1">
-                    {[2, 3, 4, 5, 6].map(n => (
+                    {[2, 3, 4, 5, 6, 7, 8].map(n => (
                       <button
                         key={n}
                         onClick={() => setNumAgents(n)}
@@ -343,6 +455,17 @@ export default function App() {
                     ))}
                   </div>
                 </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3 text-xs">
+                <label htmlFor="provider">Generation provider</label>
+                <select id="provider" value={provider} disabled={isExecuting} onChange={e => changeProvider(e.target.value)} className="rounded bg-black border border-zinc-800 p-2">
+                  <option value="ollama">Ollama (no API key)</option>
+                  <option value="openrouter">OpenRouter (optional)</option>
+                </select>
+                <button disabled={isExecuting} onClick={() => setModelRefresh(n => n + 1)} className="rounded border border-zinc-800 p-2">Refresh models</button>
+                <span className="text-zinc-500">Runs on the configured endpoint; this does not submit an HPC job.</span>
+                {modelError && <p role="status" className="w-full text-amber-300">{modelError}</p>}
               </div>
 
               {/* Textarea */}
@@ -380,7 +503,7 @@ export default function App() {
 
                   <button
                     onClick={handleRun}
-                    disabled={isExecuting || !task.trim()}
+                    disabled={isExecuting || runLoading || !task.trim() || !helmModel || (provider === 'ollama' && !!modelError)}
                     className="px-5 py-1.5 rounded bg-white text-black font-semibold text-xs hover:bg-zinc-200 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {isExecuting ? (
@@ -402,13 +525,15 @@ export default function App() {
               {showModelConfig && (
                 <div className="border-t border-zinc-800/80 pt-4 mt-4 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 font-mono text-xs">
                   <div className="space-y-1">
-                    <label className="text-[11px] text-zinc-400">Helm Orchestrator</label>
+                    <label htmlFor="helm-model" className="text-[11px] text-zinc-400">Helm Orchestrator</label>
                     <select
+                      id="helm-model"
                       value={helmModel}
                       onChange={(e) => setHelmModel(e.target.value)}
                       className="w-full bg-black border border-zinc-800 rounded p-1.5 text-xs text-zinc-200 focus:outline-none"
                     >
-                      {freeModels.map(m => (
+                      <option value="" disabled>Select model</option>
+                      {modelOptions.map(m => (
                         <option key={m.id} value={m.id}>{m.name}</option>
                       ))}
                     </select>
@@ -418,13 +543,15 @@ export default function App() {
                     const aid = `agent_${i + 1}`
                     return (
                       <div key={aid} className="space-y-1">
-                        <label className="text-[11px] text-zinc-400">Worker {i + 1}</label>
+                        <label htmlFor={`model-${aid}`} className="text-[11px] text-zinc-400">Worker {i + 1}</label>
                         <select
-                          value={workerModels[aid] || freeModels[i % freeModels.length]?.id || 'openrouter/free'}
+                          id={`model-${aid}`}
+                          value={workerModels[aid] || ''}
                           onChange={(e) => setWorkerModels({ ...workerModels, [aid]: e.target.value })}
                           className="w-full bg-black border border-zinc-800 rounded p-1.5 text-xs text-zinc-200 focus:outline-none"
                         >
-                          {freeModels.map(m => (
+                          <option value="" disabled>Select model</option>
+                          {modelOptions.map(m => (
                             <option key={m.id} value={m.id}>{m.name}</option>
                           ))}
                         </select>
@@ -470,6 +597,8 @@ export default function App() {
                           info?.status === 'done' ? 'bg-white' : (info?.status === 'running' ? 'bg-zinc-400 animate-ping' : 'bg-zinc-700')
                         }`} />
                         <span className="font-semibold text-zinc-200">Agent {i + 1}</span>
+                        {info?.model && <span className="text-zinc-500">{info.model}</span>}
+                        {info?.error && <span className="text-red-300">Error: {info.error}</span>}
                         {info?.filename && <span className="text-zinc-400">{info.filename}</span>}
                         {info?.duration_s && <span className="text-zinc-500 font-mono">({info.duration_s}s)</span>}
                       </div>
@@ -518,7 +647,7 @@ export default function App() {
 
                 {/* Code Content */}
                 <div className="flex-1 p-4 bg-black overflow-auto font-mono text-xs text-zinc-300">
-                  {selectedFile && files[selectedFile] ? (
+                  {selectedFile && Object.hasOwn(files, selectedFile) ? (
                     <pre className="whitespace-pre">{files[selectedFile]}</pre>
                   ) : (
                     <div className="h-full flex items-center justify-center text-zinc-600 font-mono text-xs">
@@ -536,6 +665,11 @@ export default function App() {
                     <span>PREVIEW: {currentRunId || 'standby'}</span>
                   </span>
                   {htmlFileExists && currentRunId && (
+                    <select aria-label="Preview page" value={previewEntry} onChange={e => setPreviewEntry(e.target.value)} className="bg-black text-zinc-200 max-w-48">
+                      {htmlFiles.map(name => <option key={name} value={name}>{name}</option>)}
+                    </select>
+                  )}
+                  {htmlFileExists && currentRunId && (
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => {
@@ -547,7 +681,7 @@ export default function App() {
                         <RotateCw className="w-3.5 h-3.5" />
                       </button>
                       <a
-                        href={`/api/preview/${currentRunId}/index.html`}
+                        href={previewUrl}
                         target="_blank"
                         rel="noreferrer"
                         className="hover:text-white"
@@ -562,15 +696,17 @@ export default function App() {
                 <div className="flex-1 bg-white relative">
                   {htmlFileExists && currentRunId ? (
                     <iframe
+                      key={previewUrl}
                       ref={iframeRef}
-                      src={`/api/preview/${currentRunId}/index.html`}
+                      src={previewUrl}
                       className="w-full h-full border-0"
-                      sandbox="allow-scripts allow-modals allow-same-origin"
+                      sandbox="allow-scripts allow-modals allow-forms"
+                      title="Generated application preview"
                     />
                   ) : (
                     <div className="absolute inset-0 bg-black flex flex-col items-center justify-center text-center p-6 text-zinc-500 font-mono text-xs">
                       <Cpu className="w-8 h-8 mb-2 text-zinc-700" />
-                      <span>Live interactive sandbox standby.</span>
+                      <span>{currentRunId ? 'No HTML page available for this run.' : 'Live interactive sandbox standby.'}</span>
                       <span className="text-[11px] text-zinc-600 mt-1">Generated web applications will render here.</span>
                     </div>
                   )}
@@ -709,10 +845,9 @@ export default function App() {
                           <td className="p-3 text-right text-zinc-400">${r.total_cost_est.toFixed(4)}</td>
                           <td className="p-3 text-center">
                             <button
+                              disabled={isExecuting}
                               onClick={() => {
-                                setCurrentRunId(r.run_id)
-                                loadRunFiles(r.run_id)
-                                setActiveTab('main')
+                                inspectRun(r.run_id)
                               }}
                               className="px-2 py-1 rounded bg-zinc-900 border border-zinc-800 hover:bg-white hover:text-black text-zinc-300 text-[11px] transition-colors"
                             >
@@ -744,13 +879,11 @@ export default function App() {
           <div className="bg-zinc-950 border border-zinc-800 rounded-lg max-w-md w-full p-5 space-y-4 font-mono">
             <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
               <span className="text-xs font-semibold text-white">OPENROUTER API KEY</span>
-              {apiKey && (
-                <button onClick={() => setShowKeyModal(false)} className="text-zinc-500 hover:text-white">&times;</button>
-              )}
+              <button aria-label="Close API key settings" onClick={() => setShowKeyModal(false)} className="text-zinc-500 hover:text-white">&times;</button>
             </div>
             
             <p className="text-[11px] text-zinc-400 font-sans">
-              Enter your OpenRouter API key to execute tasks with free models. The key is stored locally in your browser session and never shared.
+              Enter your OpenRouter API key to execute tasks with free models. The key is stored in this browser and sent to the local backend for OpenRouter requests. Close this dialog to browse without a key.
             </p>
 
             <div className="space-y-1.5">
