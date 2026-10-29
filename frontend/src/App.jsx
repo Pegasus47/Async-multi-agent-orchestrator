@@ -26,26 +26,13 @@ import {
 export default function App() {
   // Navigation: only 'main' and 'history'
   const [activeTab, setActiveTab] = useState('main')
-  const [theme, setTheme] = useState(() => localStorage.getItem('helm_theme') || 'dark')
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme
-    localStorage.setItem('helm_theme', theme)
-  }, [theme])
-  useEffect(() => {
-    fetch('/api/runs?limit=1').then(r => r.json()).then(data => {
-      if (data.runs?.length) {
-        setCurrentRunId(data.runs[0].run_id)
-        loadRunFiles(data.runs[0].run_id)
-      }
-    }).catch(console.error)
-  }, [])
 
   // Task & Config State
   const [task, setTask] = useState('Build an interactive coffee shop landing page with dark theme and dynamic menu filtering')
   const [numAgents, setNumAgents] = useState(3)
   const [apiKey, setApiKey] = useState(localStorage.getItem('openrouter_api_key') || '')
   const [tempApiKey, setTempApiKey] = useState(apiKey)
-  const [showKeyModal, setShowKeyModal] = useState(false)
+  const [showKeyModal, setShowKeyModal] = useState(!apiKey)
   const [showModelConfig, setShowModelConfig] = useState(false)
 
   // Models State
@@ -88,15 +75,11 @@ export default function App() {
   useEffect(() => {
     async function loadModels() {
       try {
-        const url = '/api/models/free'
+        const url = apiKey ? `/api/models/free?api_key=${encodeURIComponent(apiKey)}` : '/api/models/free'
         const res = await fetch(url)
         const data = await res.json()
         if (data.models && data.models.length > 0) {
           setFreeModels(data.models)
-          const ids = new Set(data.models.map(m => m.id))
-          setHelmModel(prev => ids.has(prev) ? prev : data.models[0].id)
-          setWorkerModels(prev => Object.fromEntries(Object.entries(prev).map(([id, model], i) =>
-            [id, ids.has(model) ? model : data.models[i % data.models.length].id])))
         }
       } catch (err) {
         console.error('Failed to load free models:', err)
@@ -307,13 +290,8 @@ export default function App() {
             </button>
           </div>
 
-          {/* Theme and API settings */}
+          {/* API Key Status Pill */}
           <div className="flex items-center gap-2">
-            <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-              aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
-              className="text-xs px-3 py-1 rounded border border-zinc-800 bg-zinc-900 text-zinc-300">
-              {theme === 'dark' ? 'Light mode' : 'Dark mode'}
-            </button>
             <button
               onClick={() => {
                 setTempApiKey(apiKey)
@@ -422,9 +400,7 @@ export default function App() {
 
               {/* Collapsible Model Assignment Grid */}
               {showModelConfig && (
-                <div role="dialog" aria-label="Model assignments" className="fixed right-0 top-14 bottom-0 z-50 w-full sm:w-96 bg-zinc-950 border border-zinc-800 p-6 overflow-y-auto flex flex-col gap-5 font-mono text-xs shadow-2xl">
-                  <div className="flex justify-between items-center"><strong>OpenRouter free models</strong><button onClick={() => setShowModelConfig(false)} aria-label="Close model drawer">Close ×</button></div>
-                  <p className="text-zinc-400">Choose a planning model and a model for each worker. HPC models are not connected.</p>
+                <div className="border-t border-zinc-800/80 pt-4 mt-4 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 font-mono text-xs">
                   <div className="space-y-1">
                     <label className="text-[11px] text-zinc-400">Helm Orchestrator</label>
                     <select
@@ -543,7 +519,7 @@ export default function App() {
                 {/* Code Content */}
                 <div className="flex-1 p-4 bg-black overflow-auto font-mono text-xs text-zinc-300">
                   {selectedFile && files[selectedFile] ? (
-                    <pre className="whitespace-pre-wrap break-words leading-6 tab-size-2">{files[selectedFile]}</pre>
+                    <pre className="whitespace-pre">{files[selectedFile]}</pre>
                   ) : (
                     <div className="h-full flex items-center justify-center text-zinc-600 font-mono text-xs">
                       Run an orchestration task to view source code output.
@@ -589,7 +565,7 @@ export default function App() {
                       ref={iframeRef}
                       src={`/api/preview/${currentRunId}/index.html`}
                       className="w-full h-full border-0"
-                      sandbox="allow-scripts"
+                      sandbox="allow-scripts allow-modals allow-same-origin"
                     />
                   ) : (
                     <div className="absolute inset-0 bg-black flex flex-col items-center justify-center text-center p-6 text-zinc-500 font-mono text-xs">
@@ -618,7 +594,7 @@ export default function App() {
                 <h2 className="text-sm font-semibold text-white uppercase tracking-wider">
                   Usage & Billing Breakdown
                 </h2>
-                <p className="text-xs text-zinc-500">Historical runs, token consumption, and cost telemetry. Runs marked [SAMPLE] contain synthetic usage, not live measurements.</p>
+                <p className="text-xs text-zinc-500">Historical runs, token consumption, and cost telemetry</p>
               </div>
               <button
                 onClick={loadBillingAndHistory}
@@ -734,8 +710,6 @@ export default function App() {
                           <td className="p-3 text-center">
                             <button
                               onClick={() => {
-                                setTask(r.task)
-                                setNumAgents(r.num_agents)
                                 setCurrentRunId(r.run_id)
                                 loadRunFiles(r.run_id)
                                 setActiveTab('main')
@@ -770,13 +744,13 @@ export default function App() {
           <div className="bg-zinc-950 border border-zinc-800 rounded-lg max-w-md w-full p-5 space-y-4 font-mono">
             <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
               <span className="text-xs font-semibold text-white">OPENROUTER API KEY</span>
-              {true && (
+              {apiKey && (
                 <button onClick={() => setShowKeyModal(false)} className="text-zinc-500 hover:text-white">&times;</button>
               )}
             </div>
             
             <p className="text-[11px] text-zinc-400 font-sans">
-              Enter your OpenRouter API key to execute tasks with free models. The key is saved in this browser and sent to your local server for OpenRouter requests.
+              Enter your OpenRouter API key to execute tasks with free models. The key is stored locally in your browser session and never shared.
             </p>
 
             <div className="space-y-1.5">

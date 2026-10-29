@@ -42,21 +42,3 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #3f3f46;
 }
-
-/* Map the dashboard palette without changing generated preview content. */
-html[data-theme="light"] { color-scheme: light; }
-html[data-theme="dark"] { color-scheme: dark; }
-html[data-theme="light"] body { background: #fafafa; color: #18181b; }
-html[data-theme="light"] [class*="bg-black"] { background-color: #fafafa; }
-html[data-theme="light"] [class*="bg-zinc-950"] { background-color: #fff; }
-html[data-theme="light"] [class*="bg-zinc-900"] { background-color: #f4f4f5; }
-html[data-theme="light"] [class*="bg-zinc-800"] { background-color: #e4e4e7; }
-html[data-theme="light"] [class*="bg-white"] { background-color: #18181b; }
-html[data-theme="light"] [class*="text-black"] { color: #fafafa; }
-html[data-theme="light"] [class*="text-white"],
-html[data-theme="light"] [class*="text-zinc-100"],
-html[data-theme="light"] [class*="text-zinc-200"] { color: #18181b; }
-html[data-theme="light"] [class*="text-zinc-300"],
-html[data-theme="light"] [class*="text-zinc-400"] { color: #52525b; }
-html[data-theme="light"] [class*="border-zinc-8"] { border-color: #d4d4d8; }
-html[data-theme="light"] button:hover { filter: brightness(.94); }

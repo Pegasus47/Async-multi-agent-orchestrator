@@ -1,0 +1,189 @@
+From 78072606b7cd22b5aa6583893dd30718f6a0bce0 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 22:12:17 +0000
+Subject: [PATCH] CLI: heartbeat, JSON-mode planning, no retry on local
+ timeouts
+
+- run_cli.py: print "still waiting for ..." after 30 silent seconds,
+  naming the planner or the pending agents; add --max-tokens and --timeout.
+- core/orchestrator.py: ask the planner for JSON mode.
+- core/openrouter_client.py: for Ollama, send response_format json_object
+  when asked, make one attempt only, read OLLAMA_TIMEOUT_S, honour an
+  optional LLM_MAX_TOKENS cap, and give clearer timeout errors.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GbSpbKccyZ19Cx7nrq7EgK
+---
+ core/openrouter_client.py | 27 ++++++++++++++++++++++++---
+ core/orchestrator.py      |  1 +
+ run_cli.py                | 26 ++++++++++++++++++++++++++
+ 3 files changed, 51 insertions(+), 3 deletions(-)
+
+diff --git a/core/openrouter_client.py b/core/openrouter_client.py
+index d06e3e2..acfd640 100644
+--- a/core/openrouter_client.py
++++ b/core/openrouter_client.py
+@@ -114,7 +114,8 @@ def _resolve_provider(model: str, api_key: Optional[str]) -> Tuple[str, Dict[str
+         # No key needed. Long timeout: the first request after `ollama serve` loads the model.
+         base = os.environ.get("OLLAMA_BASE_URL", OLLAMA_DEFAULT_URL)
+         url = base.rstrip("/") + "/v1/chat/completions"
+-        return url, {"Content-Type": "application/json"}, model[len(OLLAMA_PREFIX):], 600
++        timeout_s = int(os.environ.get("OLLAMA_TIMEOUT_S", "600"))
++        return url, {"Content-Type": "application/json"}, model[len(OLLAMA_PREFIX):], timeout_s
+ 
+     key = api_key or os.environ.get("OPENROUTER_API_KEY")
+     if not key:
+@@ -136,12 +137,19 @@ async def call_openrouter(
+     temperature: float = 0.2,
+     max_tokens: int = 2500,
+     max_retries: int = 3,
++    json_mode: bool = False,
+ ) -> Tuple[str, Dict[str, Any]]:
+     """
+     Calls OpenRouter chat completions with semaphore rate-limiting and exponential backoff retry.
+     Returns (content, usage_dict).
+     """
++    is_ollama = model.startswith(OLLAMA_PREFIX)
+     url, headers, model, timeout_s = _resolve_provider(model, api_key)
++    if is_ollama:
++        # A local request that timed out would only time out again, so don't retry it.
++        max_retries = 1
++    if os.environ.get("LLM_MAX_TOKENS"):  # optional cap, e.g. for slow CPU runs
++        max_tokens = min(max_tokens, int(os.environ["LLM_MAX_TOKENS"]))
+ 
+     payload = {
+         "model": model,
+@@ -152,6 +160,9 @@ async def call_openrouter(
+         "temperature": temperature,
+         "max_tokens": max_tokens,
+     }
++    if json_mode and is_ollama:
++        # Ollama then only emits a JSON object and stops when it is closed.
++        payload["response_format"] = {"type": "json_object"}
+ 
+     last_error = None
+ 
+@@ -185,7 +196,17 @@ async def call_openrouter(
+                             err_msg = data.get("error", f"HTTP {status}")
+                             raise RuntimeError(f"OpenRouter API error ({status}): {err_msg}")
+ 
+-        except (aiohttp.ClientError, asyncio.TimeoutError) as net_err:
++        except asyncio.TimeoutError:
++            last_error = f"no reply within {timeout_s}s"
++            if attempt == max_retries - 1:
++                break
++            wait_s = (2 ** attempt) + random.uniform(0.5, 1.5)
++            logger.warning(f"Timeout on {model} attempt {attempt+1}. Retrying in {wait_s:.1f}s...")
++            await asyncio.sleep(wait_s)
++        except aiohttp.ClientError as net_err:
++            last_error = str(net_err)
++            if attempt == max_retries - 1:
++                break
+             wait_s = (2 ** attempt) + random.uniform(0.5, 1.5)
+             logger.warning(f"Network error on {model} attempt {attempt+1}: {net_err}. Retrying in {wait_s:.1f}s...")
+             await asyncio.sleep(wait_s)
+@@ -197,4 +218,4 @@ async def call_openrouter(
+             await asyncio.sleep(wait_s)
+             last_error = str(ex)
+ 
+-    raise RuntimeError(f"Failed after {max_retries} attempts. Last error: {last_error}")
++    raise RuntimeError(f"{model}: failed after {max_retries} attempt(s). Last error: {last_error}")
+diff --git a/core/orchestrator.py b/core/orchestrator.py
+index c5e9989..62b41e8 100644
+--- a/core/orchestrator.py
++++ b/core/orchestrator.py
+@@ -85,6 +85,7 @@ async def plan_task(
+         user_prompt=user_prompt,
+         api_key=api_key,
+         temperature=0.1,
++        json_mode=True,
+     )
+     raw_plan = extract_json_from_text(content)
+ 
+diff --git a/run_cli.py b/run_cli.py
+index 4ae1622..be66593 100644
+--- a/run_cli.py
++++ b/run_cli.py
+@@ -20,6 +20,7 @@ import json
+ import os
+ import subprocess
+ import sys
++import threading
+ import time
+ from typing import List, Optional
+ 
+@@ -31,6 +32,7 @@ from server.db import get_run_by_id, init_db, save_run
+ HPC_LOGIN_HOST = "hpc.bits-hyderabad.ac.in"
+ MIN_AGENTS, MAX_AGENTS = 2, 8
+ LINE = "-" * 65
++HEARTBEAT_S = 30  # print "still waiting" after this many silent seconds
+ 
+ 
+ def fail(msg: str) -> None:
+@@ -194,11 +196,23 @@ def warm_up(local: LocalModels, model_ids: List[str]) -> None:
+ 
+ def run_once(task: str, planner: str, workers: List[str], api_key: Optional[str]) -> None:
+     started = time.time()
++    state = {"last_print": started, "waiting_for": "the planner", "pending": set()}
+ 
+     def log(msg: str) -> None:
++        state["last_print"] = time.time()
+         print(f"[{time.time() - started:6.1f}s] {msg}", flush=True)
+ 
++    def heartbeat(stop: threading.Event) -> None:
++        while not stop.wait(5):
++            if time.time() - state["last_print"] >= HEARTBEAT_S:
++                pending = ", ".join(sorted(state["pending"])) or state["waiting_for"]
++                log(f"still waiting for {pending} ...")
++
+     def on_update(event: str, data: dict) -> None:
++        if event == "worker_start":
++            state["pending"].add(data["agent_id"])
++        elif event in ("worker_complete", "worker_error"):
++            state["pending"].discard(data["agent_id"])
+         if event == "helm_planning_start":
+             log(f"Planning with {short(planner)} ...")
+         elif event == "helm_planning_complete":
+@@ -219,6 +233,8 @@ def run_once(task: str, planner: str, workers: List[str], api_key: Optional[str]
+     print(f" Workers : {', '.join(short(w) for w in workers)}")
+     print(LINE)
+ 
++    stop = threading.Event()
++    threading.Thread(target=heartbeat, args=(stop,), daemon=True).start()
+     try:
+         report = asyncio.run(run_orchestration(
+             task=task,
+@@ -235,6 +251,8 @@ def run_once(task: str, planner: str, workers: List[str], api_key: Optional[str]
+     except Exception as e:
+         print(f"\nRun failed: {e}")
+         return
++    finally:
++        stop.set()
+ 
+     record = report.to_dict()
+     save_run(record)
+@@ -296,6 +314,10 @@ def main() -> None:
+     p.add_argument("--workers", help="comma-separated worker models, one per agent")
+     p.add_argument("--num-agents", type=int, default=3,
+                    help=f"number of workers when --workers isn't given ({MIN_AGENTS}-{MAX_AGENTS}, default 3)")
++    p.add_argument("--max-tokens", type=int,
++                   help="cap tokens per model reply (useful on CPU, e.g. 800)")
++    p.add_argument("--timeout", type=int, default=600,
++                   help="seconds to wait for one local model reply (default 600)")
+     p.add_argument("--list-models", action="store_true", help="list the pulled Ollama models and exit")
+     p.add_argument("--pull", metavar="USER@HOST:REPO_PATH",
+                    help="(laptop) fetch HPC runs into workspaces/ and History")
+@@ -311,6 +333,10 @@ def main() -> None:
+             print(f"  {m['id']}  ({m['name']})")
+         return
+ 
++    os.environ["OLLAMA_TIMEOUT_S"] = str(args.timeout)
++    if args.max_tokens:
++        os.environ["LLM_MAX_TOKENS"] = str(args.max_tokens)
++
+     interactive = not args.task and not args.list_models
+     if interactive and not sys.stdin.isatty():
+         fail('No --task given and no keyboard (batch job). Use e.g. --task "build a kanban board".')
+-- 
+2.43.0
+

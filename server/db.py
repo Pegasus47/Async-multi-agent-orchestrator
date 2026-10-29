@@ -1,4 +1,3 @@
-from contextlib import closing
 import json
 import sqlite3
 import os
@@ -9,7 +8,7 @@ DB_PATH = os.path.join(os.getcwd(), "data", "orchestrator_study.db")
 
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    with closing(sqlite3.connect(DB_PATH)) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS runs (
@@ -35,7 +34,7 @@ def init_db():
 
 def save_run(report_dict: Dict[str, Any]):
     init_db()
-    with closing(sqlite3.connect(DB_PATH)) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO runs (
@@ -66,7 +65,7 @@ def save_run(report_dict: Dict[str, Any]):
 
 def get_all_runs(limit: int = 100) -> List[Dict[str, Any]]:
     init_db()
-    with closing(sqlite3.connect(DB_PATH)) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (limit,))
@@ -84,7 +83,7 @@ def get_all_runs(limit: int = 100) -> List[Dict[str, Any]]:
 
 def get_run_by_id(run_id: str) -> Optional[Dict[str, Any]]:
     init_db()
-    with closing(sqlite3.connect(DB_PATH)) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,))
@@ -115,9 +114,6 @@ def get_usage_billing_report() -> Dict[str, Any]:
         if h not in model_usage:
             model_usage[h] = {"calls": 0, "tokens_in": 0, "tokens_out": 0, "cost": 0.0}
         model_usage[h]["calls"] += 1
-        model_usage[h]["tokens_in"] += max(0, r["total_tokens_in"] - sum(a.get("tokens_in", 0) for a in r.get("agents", [])))
-        model_usage[h]["tokens_out"] += max(0, r["total_tokens_out"] - sum(a.get("tokens_out", 0) for a in r.get("agents", [])))
-        model_usage[h]["cost"] += max(0, r["total_cost_est"] - sum(a.get("cost_est", 0) for a in r.get("agents", [])))
 
         for a in r.get("agents", []):
             m = a.get("model", "unknown")
@@ -165,4 +161,3 @@ def get_analytics_leaderboard() -> Dict[str, Any]:
         "worker_rankings": billing["model_breakdown"],
         "total_runs": billing["summary"]["total_runs"],
     }
-
